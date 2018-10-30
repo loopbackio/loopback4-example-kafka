@@ -5,7 +5,15 @@ import {
   ConsumerGroup,
 } from 'kafka-node';
 
-import {post, param, requestBody} from '@loopback/rest';
+import {
+  post,
+  param,
+  requestBody,
+  get,
+  RestBindings,
+  Response,
+} from '@loopback/rest';
+import {inject} from '@loopback/context';
 
 //tslint:disable:no-any
 
@@ -15,10 +23,12 @@ export class KafkaDemoController {
   private client: KafkaClient;
   private producer: HighLevelProducer;
 
-  constructor() {
-    this.client = new KafkaClient({kafkaHost: KAFKA_HOST});
+  constructor(
+    @inject('kafka.host', {optional: true})
+    private kafkaHost: string = KAFKA_HOST,
+  ) {
+    this.client = new KafkaClient({kafkaHost});
     this.producer = new HighLevelProducer(this.client, {});
-    this.producer.on('ready', () => {});
   }
 
   /**
@@ -32,18 +42,47 @@ export class KafkaDemoController {
   }
 
   /**
-   * 
-   * @param topic 
+   *
+   * @param topic
    */
-  @post('/topics/{topic}/subscriptions')
-  subscribe(@param.path.string('topic') topic: string) {
+  @get('/topics/{topic}/messages', {
+    responses: {
+      '200': {
+        'text/event-stream': {
+          schema: {
+            type: 'string',
+          },
+        },
+      },
+    },
+  })
+  subscribe(
+    @param.path.string('topic') topic: string,
+    @param.query.string('limit') limit: number,
+    @inject(RestBindings.Http.RESPONSE) response: Response,
+  ) {
+    limit = +limit || 5;
+    response.setHeader('Cache-Control', 'no-cache');
+    response.contentType('text/event-stream');
     const consumer = new ConsumerGroup(
-      {kafkaHost: KAFKA_HOST, groupId: 'KafkaDemoController'},
+      {
+        kafkaHost: this.kafkaHost,
+        groupId: 'KafkaDemoController',
+      },
       [topic],
     );
+    let count = 0;
     consumer.on('message', message => {
-      console.log('Message received:', message);
+      count++;
+      response.write(`id: ${message.offset}\n`);
+      response.write('event: message\n');
+      response.write(`data: ${JSON.stringify(message)}\n`);
+      if (count >= limit) {
+        response.end();
+        consumer.close(false, () => {});
+      }
     });
+    return response;
   }
 
   /**
