@@ -59,3 +59,8 @@ typings/
 
 # next.js build output
 .next
+# Generated apidocs
+api-docs/
+
+# Transpiled JavaScript files from Typescript
+/dist
