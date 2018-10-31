@@ -59,6 +59,8 @@ export class KafkaDemoController {
   subscribe(
     @param.path.string('topic') topic: string,
     @param.query.string('limit') limit: number,
+    @param.query.string('fromOffset')
+    fromOffset: 'earliest' | 'latest' | 'none' = 'latest',
     @inject(RestBindings.Http.RESPONSE) response: Response,
   ) {
     limit = +limit || 5;
@@ -68,6 +70,7 @@ export class KafkaDemoController {
       {
         kafkaHost: this.kafkaHost,
         groupId: 'KafkaDemoController',
+        fromOffset,
       },
       [topic],
     );
