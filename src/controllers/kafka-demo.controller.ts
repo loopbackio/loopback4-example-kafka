@@ -12,12 +12,24 @@ import {
   get,
   RestBindings,
   Response,
+  HttpErrors,
+  del,
 } from '@loopback/rest';
 import {inject} from '@loopback/context';
+import uuid = require('uuid');
 
 //tslint:disable:no-any
 
-const KAFKA_HOST = '127.0.0.1:9092';
+const KAFKA_HOST = 'localhost:9092';
+
+type FromOffset = 'earliest' | 'latest' | 'none';
+interface SubscriptionRequest {
+  topics: string[];
+  groupId: string;
+  fromOffset: FromOffset;
+}
+
+const consumers: {[id: string]: ConsumerGroup} = {};
 
 export class KafkaDemoController {
   private client: KafkaClient;
@@ -41,11 +53,34 @@ export class KafkaDemoController {
     });
   }
 
+  private createConsumer(
+    groupId: string,
+    topics: string[],
+    fromOffset: 'earliest' | 'latest' | 'none' = 'latest',
+    clientId = uuid.v4(),
+  ) {
+    const consumer = new ConsumerGroup(
+      {
+        kafkaHost: this.kafkaHost,
+        groupId: groupId || 'KafkaDemoController',
+        fromOffset,
+        id: clientId,
+      },
+      topics,
+    );
+    consumers[clientId] = consumer;
+    return consumer;
+  }
+
+  private getConsumer(clientId: string) {
+    return consumers[clientId];
+  }
+
   /**
    *
    * @param topic
    */
-  @get('/topics/{topic}/messages', {
+  @get('/consumers/{clientId}/messages', {
     responses: {
       '200': {
         'text/event-stream': {
@@ -56,24 +91,22 @@ export class KafkaDemoController {
       },
     },
   })
-  subscribe(
-    @param.path.string('topic') topic: string,
+  async fetch(
+    @param.path.string('clientId') clientId: string,
     @param.query.string('limit') limit: number,
-    @param.query.string('fromOffset')
-    fromOffset: 'earliest' | 'latest' | 'none' = 'latest',
     @inject(RestBindings.Http.RESPONSE) response: Response,
   ) {
+    let consumer: ConsumerGroup | undefined = undefined;
+    if (clientId) {
+      consumer = this.getConsumer(clientId);
+    }
+    if (!consumer) {
+      throw new HttpErrors.NotFound(`Consumer ${clientId} does not exist`);
+    }
     limit = +limit || 5;
     response.setHeader('Cache-Control', 'no-cache');
     response.contentType('text/event-stream');
-    const consumer = new ConsumerGroup(
-      {
-        kafkaHost: this.kafkaHost,
-        groupId: 'KafkaDemoController',
-        fromOffset,
-      },
-      [topic],
-    );
+
     let count = 0;
     consumer.on('message', message => {
       count++;
@@ -82,10 +115,72 @@ export class KafkaDemoController {
       response.write(`data: ${JSON.stringify(message)}\n`);
       if (count >= limit) {
         response.end();
-        consumer.close(false, () => {});
       }
     });
     return response;
+  }
+
+  /**
+   *
+   * @param topic
+   */
+  @post('/consumers', {
+    responses: {
+      '200': {
+        'application/json': {
+          schema: {
+            type: 'object',
+            properties: {
+              clientId: {type: 'string'},
+            },
+          },
+        },
+      },
+    },
+  })
+  subscribe(
+    @requestBody({
+      content: {
+        'application/json': {
+          schema: {
+            type: 'object',
+            properties: {
+              topics: {type: 'array', items: {type: 'string'}},
+              fromOffset: {type: 'string'},
+              groupId: {type: 'string'},
+            },
+          },
+        },
+      },
+    })
+    body: SubscriptionRequest,
+    @inject(RestBindings.Http.RESPONSE) response: Response,
+  ) {
+    const consumer = this.createConsumer(
+      body.groupId || 'KafkaDemoController',
+      body.topics,
+      body.fromOffset,
+    );
+    const client = consumer.client as any;
+    return {
+      clientId: client.clientId,
+    };
+  }
+
+  @del('/consumers/{clientId}')
+  async deleteConsumer(@param.path.string('clientId') clientId: string) {
+    const consumer = this.getConsumer(clientId);
+    if (consumer) {
+      delete consumers[clientId];
+      return new Promise<void>((resolve, reject) => {
+        consumer.close(false, err => {
+          if (err) reject(err);
+          else resolve();
+        });
+      });
+    } else {
+      throw new HttpErrors.NotFound(`Consumer ${clientId} does not exist`);
+    }
   }
 
   /**
