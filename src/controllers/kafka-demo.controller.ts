@@ -76,6 +76,31 @@ export class KafkaDemoController {
     return consumers[clientId];
   }
 
+  private writeMessageToResponse(
+    consumer: ConsumerGroup,
+    limit: number,
+    response: Response,
+  ) {
+    let count = 0;
+    consumer.on('message', message => {
+      count++;
+      response.write(`id: ${message.offset}\n`);
+      response.write('event: message\n');
+      response.write(`data: ${JSON.stringify(message)}\n`);
+      if (count >= limit) {
+        response.end();
+      }
+      consumer.close(err => {
+        if (err)
+          console.log(
+            'Something is wrong when closing the consumer.',
+            err.message,
+          );
+      });
+    });
+    return response;
+  }
+
   /**
    *
    * @param topic
@@ -107,16 +132,7 @@ export class KafkaDemoController {
     response.setHeader('Cache-Control', 'no-cache');
     response.contentType('text/event-stream');
 
-    let count = 0;
-    consumer.on('message', message => {
-      count++;
-      response.write(`id: ${message.offset}\n`);
-      response.write('event: message\n');
-      response.write(`data: ${JSON.stringify(message)}\n`);
-      if (count >= limit) {
-        response.end();
-      }
-    });
+    this.writeMessageToResponse(consumer, limit, response);
     return response;
   }
 
@@ -238,5 +254,34 @@ export class KafkaDemoController {
         else resolve(data);
       });
     });
+  }
+
+  /**
+   * Consume messages of a given topic
+   * @param topic The topic name
+   */
+  @get('/topics/{topic}/messages', {
+    responses: {
+      '200': {
+        'text/event-stream': {
+          schema: {
+            type: 'string',
+          },
+        },
+      },
+    },
+  })
+  async consumeMessagesOnTopics(
+    @param.path.string('topic') topic: string,
+    @param.query.string('limit') limit: number,
+    @inject(RestBindings.Http.RESPONSE) response: Response,
+  ) {
+    let consumer = this.createConsumer('', [topic], 'none');
+
+    limit = +limit || 5;
+    response.setHeader('Cache-Control', 'no-cache');
+    response.contentType('text/event-stream');
+
+    return this.writeMessageToResponse(consumer, limit, response);
   }
 }
